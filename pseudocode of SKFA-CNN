@@ -1,0 +1,59 @@
+符号约定：
+• C_in, C_out：通道数
+• K_i：第 i 条分支的卷积核时间长度（∈{3,5,7,9}）
+• S：步长（默认为 2 或 1）
+• P_i：保持长度不变的填充，P_i = (K_i−1)/2
+• GAP：全局平均池化 → 向量 z∈ℝ^{C_out}
+• FC：全连接 + Sigmoid → 注意力向量 a∈ℝ^{4·C_out}
+• ⊕：逐元素加（残差）
+• ⊗：逐通道-逐点乘（广播）
+Algorithm 1 Selective-Kernel Residual Block (SK-Block)
+Input: 特征图 X∈ℝ^{B×C_in×T×M}
+Output: 增强特征图 Y∈ℝ^{B×C_out×T'×M}
+多分支卷积
+for i = 1 to 4 do
+      Y_i ← Conv2D(X, kernel=(K_i,1), stride=(S,1), pad=(P_i,0))
+      Y_i ← BatchNorm(Y_i)
+end for
+融合 + 注意力
+U ← ∑_i Y_i                ▹ 元素级求和
+z ← GAP(U)                ▹ z∈ℝ^{C_out}
+a ← σ( W·z )               ▹ a∈ℝ^{4C_out}, W∈ℝ^{4C_out×C_out}
+A ← reshape(a, [4, C_out])        ▹ 注意力权重矩阵
+加权聚合
+for i = 1 to 4 do
+      Y_i ← Y_i ⊗ A[i,:]          ▹ 广播乘法
+end for
+Y ← ∑_i Y_i
+return Y
+Algorithm 2 SK-ResNet Forward Pass
+Input: 原始传感器矩阵 X∈ℝ^{B×1×T×M}
+Output: 类别 logits L∈ℝ^{B×N_class}
+四层 SK-Residual 堆叠
+H ← X
+for (C_in, C_out, S) in [(1,64,2), (64,128,2), (128,256,2), (256,512,2)] do
+      H ← SK-Block(H, C_in→C_out, stride=S)  ▹ 每个 Block 含 2 个 SK-Block，第二个 stride=1
+end for
+全局池化 + 分类
+H ← AdaptiveAvgPool2D(H, output_size=(1,M))
+h ← flatten(H)             ▹ h∈ℝ^{512·M}
+L ← Linear(h, N_class)
+return L
+Algorithm 3 MMD Loss (RBF-kernel)
+Input: 源域特征 F_s∈ℝ^{n×d}，目标域特征 F_t∈ℝ^{m×d}
+Output: MMD 损失标量 L_mmd
+拼接样本 K ← [F_s; F_t]
+计算 pairwise L2 距离矩阵 D∈ℝ^{(n+m)×(n+m)}
+多带宽高斯核
+for i = 0 to kernel_num-1 do
+      σ_i ← σ_base · (kernel_mul)^i
+      G_i ← exp(−D / σ_i)
+end for
+G ← ∑_i G_i
+分块期望
+XX ← mean(G_{1:n,1:n})
+YY ← mean(G_{n+1:,n+1:})
+XY ← mean(G_{1:n,n+1:})
+YX ← mean(G_{n+1:,1:n})
+L_mmd ← XX + YY − XY − YX
+return L_mmd
